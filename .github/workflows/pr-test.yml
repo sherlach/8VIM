@@ -5,49 +5,23 @@ concurrency: pr-${{github.event.number}}
 on:
   pull_request:
     branches: [master]
-
+    paths:
+      - "metadata/**/changelogs/*.txt"
+      - "**.gradle"
+      - "8vim/**"
 jobs:
-  dependabot_check:
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'ignore') 
-        && startsWith(github.head_ref, 'dependabot/gradle')
-    uses: ./.github/workflows/codecheck.yaml
-    with:
-      skip-codecov: true
-    secrets: inherit
   changes:
     name: Detect changed files
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ignore') }}
     permissions:
       pull-requests: read
     outputs:
-      ci: ${{ steps.changes.outputs.ci }}
       src: ${{ steps.changes.outputs.src }}
       yaml: ${{ steps.changes.outputs.yaml }}
-      schemas: ${{ steps.changes.outputs.schemas }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 2
-      - id: commit
-        run: |
-          echo "previous=$(git rev-parse HEAD^)" >> $GITHUB_OUTPUT
-      - uses: dorny/paths-filter@v3
-        id: ci_changes
-        with:
-          base: ${{steps.commit.outputs.previous}}
-          token: ${{ github.event.pull_request.commits < 2 && github.token || ''}}
-          filters: |
-            ci:
-              - '.github/workflows/*.yaml'
-              - '.github/workflows/*.yml'
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v2
         id: changes
         with:
-          base: ${{steps.commit.outputs.previous}}
-          token: ${{ (steps.ci_changes.outputs.ci == 'true' || github.event.pull_request.commits < 2) && github.token || ''}}
           filters: |
             metadata:
               - 'metadata/**/changelogs/*.txt'
@@ -57,14 +31,11 @@ jobs:
               - '8vim/**/*.xml'
               - '8vim/**/*.pro'
               - '**.gradle'
-              - '**.gradle.kts'
-              - 'gradle/libs.versions.toml'
             yaml:
               - '8vim/src/main/res/raw/*.yaml'
               - '8vim/src/main/res/raw/*.yml'
-              - '8vim/src/main/resources/schemas/**/*.json'
-            schemas:
-              - '8vim/src/main/resources/schemas/**/*.json'
+              - '8vim/src/main/res/values/strings.xml'
+              - modified: '8vim/src/main/resources/schema.json'
       - if: ${{ steps.changes.outputs.metadata == 'true' }}
         run: |
           echo "You cannot change the changelogs manually"
@@ -74,45 +45,68 @@ jobs:
     if: ${{ needs.changes.outputs.yaml == 'true' }}
     name: Validate language layouts
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
+      - uses: mavrosxristoforos/get-xml-info@1.1.1
+        id: xml
+        with:
+          xml-file: 8vim/src/main/res/values/strings.xml
+          xpath: //resources/string-array[@name='keyboard_layouts_id']/item
+      - uses: actions/github-script@v6
+        env:
+          XML: ${{steps.xml.outputs.info}}
+        with:
+          script: |
+            let failed = false
+            const xml = process.env.XML.split(',')
+            for(const lang of xml) {
+              const pattern = [`8vim/src/main/res/raw/${lang}.yaml`,`8vim/src/main/res/raw/${lang}.yml`]
+              const globber = await glob.create(pattern.join("\n"))
+              const files = await globber.glob()
+              if(files.length!=1) {
+                core.error(`Missing language layout for ${lang}`)
+                failed = true
+              }
+            }
+            if(failed) {
+              core.setFailed("Missing layout files")
+            }
       - uses: 8VIM/json-yaml-validate@main
         with:
-          schema_dir: ./8vim/src/main/resources/schemas
-          schema_name: https://8vim.github.io/schemas/schema.json
+          json_schema: ./8vim/src/main/resources/schema.json
+          yaml_as_json: "true"
           base_dir: ./8vim/src/main/res/raw
-  test_run:
-    name: Test & coverage
+  test:
+    name: 8VIM tests
     needs: changes
-    if: |
-      needs.changes.outputs.src == 'true' 
-      || needs.changes.outputs.schemas == 'true'
-    uses: ./.github/workflows/codecheck.yaml
-    secrets: inherit
+    if: ${{ needs.changes.outputs.src == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-java@v3
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: gradle
+      - run: ./gradlew check
   build:
-    needs: [validate_layouts, test_run, changes]
-    if: |
-      !cancelled() && (
-        (needs.test_run.result != 'skipped' 
-          && needs.validate_layouts.result != 'skipped' 
-          && needs.test_run.result == 'success' 
-          && needs.validate_layouts.result == 'success')
-        || (needs.test_run.result == 'skipped'
-          && needs.validate_layouts.result == 'success')
-        || (needs.validate_layouts.result == 'skipped' 
-          && needs.test_run.result == 'success')
-      )
+    if: ${{ !cancelled() && (needs.test.result == 'success' || needs.validate_layouts.result == 'success') }}
+    needs: [validate_layouts, test]
     uses: ./.github/workflows/build.yaml
     with:
       ref: ${{github.ref}}
       target: debug
-      pr: ${{github.event.number}}
-      sha: ${{github.event.pull_request.head.sha}}
     secrets: inherit
-  test_check:
-    name: Github action test check workaround
-    if: ${{always()}}
-    needs: [validate_layouts, test_run]
+  upload_artifact:
+    if: ${{ !cancelled() && needs.build.result=='success' }}
+    needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - run: exit ${{ ((needs.validate_layouts.result == 'skipped' && needs.test_run.result == 'skipped') || (needs.test_run.result != 'failure' && needs.validate_layouts.result != 'failure')) && '0' || '1' }}
+      - run: echo ${{ github.event.number }} > ./pr_number
+      - uses: actions/upload-artifact@v3
+        with:
+          name: artifact
+          path: pr_number
+          retention-days: 7

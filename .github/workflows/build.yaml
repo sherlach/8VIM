@@ -1,6 +1,4 @@
 name: Build 8Vim
-run-name: Build 8VIM ${{inputs.target}}
-
 on:
   workflow_call:
     inputs:
@@ -10,22 +8,10 @@ on:
       ref:
         type: string
         required: true
-      pr:
-        type: number
-      sha:
-        type: string
-      cache-read-only:
-        type: boolean
-        default: false
-    outputs:
-      artifact-id:
-        value: ${{ jobs.build.outputs.artifact-id }}
 jobs:
   build:
-    name: "Build app: ${{inputs.target}}"
+    name: Build app
     runs-on: ubuntu-latest
-    outputs:
-      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Get gradle command
         id: gradle
@@ -44,26 +30,17 @@ jobs:
               exit 1
               ;;
           esac
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
         with:
           ref: ${{inputs.ref}}
           fetch-depth: 0
-      - name: Setup PR number
-        if: ${{inputs.target == 'debug'}}
-        run: |
-          echo "" >> 8vim/version.properties
-          echo "PR=${{inputs.pr}}" >> 8vim/version.properties
-          echo "SHA=${{inputs.sha}}" >> 8vim/version.properties
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v3
         with:
           java-version: "17"
           distribution: temurin
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: ${{inputs.cache-read-only}}
+          cache: gradle
       - name: Get keystore
-        if: ${{ inputs.target != 'debug'}}
+        if: ${{inputs.target!='debug'}}
         run: |
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" > keystore-b64.txt
           base64 -d keystore-b64.txt > 8vim/8vim.jks
@@ -75,13 +52,11 @@ jobs:
           VIM8_BUILD_KEY_PASSWORD: ${{ secrets.VIM8_BUILD_KEY_PASSWORD }}
         run: ./gradlew ${{steps.gradle.outputs.cmd}}
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        id: upload
+        uses: actions/upload-artifact@v3
         with:
-          name: artifact-${{inputs.target}}
+          name: artifact
           if-no-files-found: ignore
           path: |
             8vim/build/outputs/*/${{inputs.target}}/8vim-${{inputs.target}}.*
             8vim/build/outputs/mapping/${{inputs.target}}/mapping.txt
-          retention-days: 1
-          overwrite: true
+          retention-days: 7
