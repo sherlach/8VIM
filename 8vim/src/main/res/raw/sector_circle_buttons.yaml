@@ -1,4 +1,3 @@
-version: "2"
 layers:
   hidden:
     - type: input_key
