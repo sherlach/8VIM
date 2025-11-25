@@ -3,12 +3,12 @@ name: Merged pull request
 concurrency: release
 
 on:
-  workflow_dispatch:
   pull_request_target:
     branches: [master]
     types: [closed]
     paths:
-      - "**.gradle"
+      - "gradle/libs.versions.toml"
+      - "**.gradle.kts"
       - "8vim/**"
 jobs:
   changes:
@@ -19,20 +19,33 @@ jobs:
       pull-requests: read
     outputs:
       src: ${{ steps.changes.outputs.src }}
+      schemas: ${{ steps.changes.outputs.schemas }}
     steps:
-      - uses: dorny/paths-filter@v2
+      - uses: dorny/paths-filter@v3
         id: changes
         with:
           filters: |
             src:
-              - 8vim/**/*.java
-              - 8vim/**/*.kt
-              - 8vim/**/*.xml
-              - 8vim/**/*.pro
-              - "**.gradle"
-              - 8vim/src/main/res/raw/*.yaml
-              - 8vim/src/main/res/raw/*.yml
-              - modified: '8vim/src/main/resources/schema.json'
+              - '8vim/**/*.java'
+              - '8vim/**/*.kt'
+              - '8vim/**/*.xml'
+              - '8vim/**/*.pro'
+              - '**.gradle'
+              - '**.gradle.kts'
+              - 'gradle/libs.versions.toml'
+              - '8vim/src/main/res/raw/*.yaml'
+              - '8vim/src/main/res/raw/*.yml'
+              - '8vim/src/main/resources/schemas/**/*.json'
+            schemas:
+              - '8vim/src/main/resources/schemas/**/*.json'
+  update_schema:
+    needs: [changes]
+    name: "Website: Update layout schemas"
+    if: ${{ needs.changes.outputs.schemas == 'true' }}
+    uses: ./.github/workflows/update-schemas.yaml
+    secrets: inherit
+    permissions:
+      contents: write
   bump_version:
     needs: changes
     if: ${{ needs.changes.outputs.src == 'true' }}
@@ -42,21 +55,25 @@ jobs:
       message: ${{github.event.pull_request.title}}
       version: rc
     secrets: inherit
-  version:
-    if: ${{ github.event_name!='pull_request_target'}}
-    name: Get version
-    uses: ./.github/workflows/extract-version.yaml
   release:
-    needs: [bump_version, version]
-    if: ${{ !cancelled() && (needs.bump_version.result == 'success' || needs.version.result == 'success') }}
+    needs: [bump_version]
     name: Release
     uses: ./.github/workflows/publish.yaml
     with:
-      version_code: ${{needs.bump_version.result == 'success' && needs.bump_version.outputs.version_code || needs.version.outputs.version_code}}
-      version_name: ${{needs.bump_version.result == 'success' && needs.bump_version.outputs.version_name || needs.version.outputs.version_name}}
+      version_code: ${{needs.bump_version.outputs.version_code}}
+      version_name: ${{needs.bump_version.outputs.version_name}}
     secrets: inherit
     permissions:
-      actions: read
+      actions: write
       issues: read
       pull-requests: read
       contents: write
+  private_fdroid:
+    needs: changes
+    uses: ./.github/workflows/private-fdroid-repo.yaml
+    permissions:
+      actions: write
+    with:
+      type: merge
+      pr: ${{github.event.number}}
+    secrets: inherit
